@@ -77,10 +77,12 @@ object_counts = {obj: 0 for obj in OBJECTS.keys()}
 hourly_revenue = 0  # Stündlicher Umsatz
 
 # Drogenlabor Timer Variablen
-drug_timer_end = None
-drug_timer_type = None  # "cannabis", "cocaine", "counterfeit"
+drug_timers = {
+    "cannabis": {"end_time": None, "notification_sent": False},
+    "cocaine": {"end_time": None, "notification_sent": False},
+    "counterfeit": {"end_time": None, "notification_sent": False}
+}
 drug_message_id = None
-notification_sent = False  # Damit wir nicht mehrfach pingen
 
 # Nachrichten-IDs für spätere Updates
 control_message_id = None
@@ -184,35 +186,57 @@ def create_state_embed():
     
     return embed
 
+# Funktion zum Berechnen der Endzeit für den Drogentimer
+def calculate_drug_end_time():
+    now = datetime.now()
+    
+    # Berechne die Zeit bis zur nächsten vollen Stunde
+    minutes_to_next_hour = 60 - now.minute
+    seconds_to_next_hour = minutes_to_next_hour * 60 - now.second
+    
+    # Füge 5 Stunden hinzu
+    total_seconds = seconds_to_next_hour + 5 * 3600
+    
+    # Erstelle die Endzeit
+    end_time = now + timedelta(seconds=total_seconds)
+    
+    return end_time
+
 # Funktion zum Erstellen des Drogenlabor-Embeds
 def create_drug_embed():
     embed = discord.Embed(
         title="Drogenlabor Timer:",
-        color=0xFFFFFF  # Weiße Farbe für den Embed-Balken
+        color=0x808080  # Graue Farbe für den Embed-Balken
     )
     
-    if drug_timer_end and drug_timer_type:
-        # Berechne die verbleibende Zeit
-        remaining = drug_timer_end - datetime.now()
-        
-        if remaining.total_seconds() > 0:
-            # Erstelle einen Discord-Timestamp für die Endzeit
-            timestamp = int(drug_timer_end.timestamp())
+    description_lines = []
+    
+    for drug_type, timer_data in drug_timers.items():
+        if timer_data["end_time"]:
+            end_time = timer_data["end_time"]
+            remaining = end_time - datetime.now()
             
-            if drug_timer_type == "cannabis":
-                embed.description = f"🍁 Cannabis Fertig in: <t:{timestamp}:R>"
-            elif drug_timer_type == "cocaine":
-                embed.description = f"❄️ Kokain Fertig in: <t:{timestamp}:R>"
-            elif drug_timer_type == "counterfeit":
-                embed.description = f"💸 Falschgeld Fertig in: <t:{timestamp}:R>"
-        else:
-            # Timer ist abgelaufen
-            if drug_timer_type == "cannabis":
-                embed.description = "🍁 Cannabis fertig! ✅"
-            elif drug_timer_type == "cocaine":
-                embed.description = "❄️ Kokain fertig! ✅"
-            elif drug_timer_type == "counterfeit":
-                embed.description = "💸 Falschgeld fertig! ✅"
+            if remaining.total_seconds() > 0:
+                # Erstelle einen Discord-Timestamp für die Endzeit
+                timestamp = int(end_time.timestamp())
+                
+                if drug_type == "cannabis":
+                    description_lines.append(f"🍁 Cannabis Fertig in: <t:{timestamp}:R>")
+                elif drug_type == "cocaine":
+                    description_lines.append(f"❄️ Kokain Fertig in: <t:{timestamp}:R>")
+                elif drug_type == "counterfeit":
+                    description_lines.append(f"💸 Falschgeld Fertig in: <t:{timestamp}:R>")
+            else:
+                # Timer ist abgelaufen
+                if drug_type == "cannabis":
+                    description_lines.append("🍁 Cannabis fertig! ✅")
+                elif drug_type == "cocaine":
+                    description_lines.append("❄️ Kokain fertig! ✅")
+                elif drug_type == "counterfeit":
+                    description_lines.append("💸 Falschgeld fertig! ✅")
+    
+    if description_lines:
+        embed.description = "\n".join(description_lines)
     else:
         embed.description = "Kein aktiver Timer"
     
@@ -287,36 +311,35 @@ async def update_drug_embed():
 
 # Funktion zum Senden der Benachrichtigung 10 Minuten vor Fertigstellung
 async def send_notification():
-    global notification_sent, drug_timer_end, drug_timer_type
-    
-    if drug_timer_end and drug_timer_type and not notification_sent:
-        remaining = drug_timer_end - datetime.now()
-        
-        # Prüfe ob noch 10 Minuten oder weniger übrig sind
-        if remaining.total_seconds() <= 600 and remaining.total_seconds() > 0:
-            try:
-                channel = bot.get_channel(DRUG_CHANNEL_ID)
-                role = channel.guild.get_role(NOTIFICATION_ROLE_ID)
-                
-                if role:
-                    # Bestimme das entsprechende Emoji für die Nachricht
-                    emoji = ""
-                    if drug_timer_type == "cannabis":
-                        emoji = "🍁"
-                    elif drug_timer_type == "cocaine":
-                        emoji = "❄️"
-                    elif drug_timer_type == "counterfeit":
-                        emoji = "💸"
+    for drug_type, timer_data in drug_timers.items():
+        if timer_data["end_time"] and not timer_data["notification_sent"]:
+            remaining = timer_data["end_time"] - datetime.now()
+            
+            # Prüfe ob noch 10 Minuten oder weniger übrig sind
+            if remaining.total_seconds() <= 600 and remaining.total_seconds() > 0:
+                try:
+                    channel = bot.get_channel(DRUG_CHANNEL_ID)
+                    role = channel.guild.get_role(NOTIFICATION_ROLE_ID)
                     
-                    await channel.send(f"{role.mention} Das Produkt {emoji} wird in 10 Minuten fertig, mach dich bereit es abzuholen!")
-                    notification_sent = True
-                    print(f"✅ Benachrichtigung gesendet für {drug_timer_type}")
-            except Exception as e:
-                print(f"❌ Fehler beim Senden der Benachrichtigung: {e}")
-        
-        # Wenn der Timer abgelaufen ist, setze die Benachrichtigung zurück
-        elif remaining.total_seconds() <= 0:
-            notification_sent = False
+                    if role:
+                        # Bestimme das entsprechende Emoji für die Nachricht
+                        emoji = ""
+                        if drug_type == "cannabis":
+                            emoji = "🍁"
+                        elif drug_type == "cocaine":
+                            emoji = "❄️"
+                        elif drug_type == "counterfeit":
+                            emoji = "💸"
+                        
+                        await channel.send(f"{role.mention} Das Produkt {emoji} wird in 10 Minuten fertig, mach dich bereit es abzuholen!")
+                        drug_timers[drug_type]["notification_sent"] = True
+                        print(f"✅ Benachrichtigung gesendet für {drug_type}")
+                except Exception as e:
+                    print(f"❌ Fehler beim Senden der Benachrichtigung: {e}")
+            
+            # Wenn der Timer abgelaufen ist, setze die Benachrichtigung zurück
+            elif remaining.total_seconds() <= 0:
+                drug_timers[drug_type]["notification_sent"] = False
 
 # Funktion zum Speichern des Zustands als Dateianhang im Channel
 async def save_state_to_channel():
@@ -385,9 +408,8 @@ async def check_drug_timers():
     while not bot.is_closed():
         try:
             # Überprüfe ob ein Timer aktiv ist
-            if drug_timer_end and drug_timer_type:
-                await send_notification()
-                await update_drug_embed()
+            await send_notification()
+            await update_drug_embed()
             
             # Warte 30 Sekunden bis zur nächsten Überprüfung
             await asyncio.sleep(30)
@@ -707,31 +729,46 @@ def create_drug_buttons():
             self.add_item(counterfeit_button)
         
         async def cannabis_callback(self, interaction: Interaction):
-            global drug_timer_end, drug_timer_type, notification_sent
-            drug_timer_end = datetime.now() + timedelta(hours=5)
-            drug_timer_type = "cannabis"
-            notification_sent = False
+            end_time = calculate_drug_end_time()
+            drug_timers["cannabis"]["end_time"] = end_time
+            drug_timers["cannabis"]["notification_sent"] = False
+            
+            # Berechne die Gesamtdauer für die Bestätigungsnachricht
+            now = datetime.now()
+            total_duration = end_time - now
+            hours = total_duration.seconds // 3600
+            minutes = (total_duration.seconds % 3600) // 60
             
             await update_drug_embed()
-            await interaction.response.send_message("🍁 Cannabis-Timer gestartet (5 Stunden)", ephemeral=True, delete_after=3)
+            await interaction.response.send_message(f"🍁 Cannabis-Timer gestartet ({hours}:{minutes:02d}:00)", ephemeral=True, delete_after=3)
         
         async def cocaine_callback(self, interaction: Interaction):
-            global drug_timer_end, drug_timer_type, notification_sent
-            drug_timer_end = datetime.now() + timedelta(hours=5)
-            drug_timer_type = "cocaine"
-            notification_sent = False
+            end_time = calculate_drug_end_time()
+            drug_timers["cocaine"]["end_time"] = end_time
+            drug_timers["cocaine"]["notification_sent"] = False
+            
+            # Berechne die Gesamtdauer für die Bestätigungsnachricht
+            now = datetime.now()
+            total_duration = end_time - now
+            hours = total_duration.seconds // 3600
+            minutes = (total_duration.seconds % 3600) // 60
             
             await update_drug_embed()
-            await interaction.response.send_message("❄️ Kokain-Timer gestartet (5 Stunden)", ephemeral=True, delete_after=3)
+            await interaction.response.send_message(f"❄️ Kokain-Timer gestartet ({hours}:{minutes:02d}:00)", ephemeral=True, delete_after=3)
         
         async def counterfeit_callback(self, interaction: Interaction):
-            global drug_timer_end, drug_timer_type, notification_sent
-            drug_timer_end = datetime.now() + timedelta(hours=5)
-            drug_timer_type = "counterfeit"
-            notification_sent = False
+            end_time = calculate_drug_end_time()
+            drug_timers["counterfeit"]["end_time"] = end_time
+            drug_timers["counterfeit"]["notification_sent"] = False
+            
+            # Berechne die Gesamtdauer für die Bestätigungsnachricht
+            now = datetime.now()
+            total_duration = end_time - now
+            hours = total_duration.seconds // 3600
+            minutes = (total_duration.seconds % 3600) // 60
             
             await update_drug_embed()
-            await interaction.response.send_message("💸 Falschgeld-Timer gestartet (5 Stunden)", ephemeral=True, delete_after=3)
+            await interaction.response.send_message(f"💸 Falschgeld-Timer gestartet ({hours}:{minutes:02d}:00)", ephemeral=True, delete_after=3)
     
     return DrugView()
 

@@ -5,14 +5,41 @@ from discord import Interaction
 import asyncio
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import io
+import aiohttp
 
-# TOKEN HIER EINFÜGEN: Ersetze den Text zwischen den Anführungszeichen mit deinem echten Bot-Token
-BOT_TOKEN = "BotTokenHier"
+# ✅ FÜR 24/7 BETRIEB HINZUGEFÜGT:
+from flask import Flask
+from threading import Thread
+import time
+
+# Flask Server für UptimeRobot
+app = Flask('')
+
+@app.route('/')
+def home():
+    return f"✅ Bot läuft! {time.time()}"
+
+def run_flask():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.start()
+
+# Starte den Flask Server
+keep_alive()
+
+# TOKEN aus Umgebungsvariable
+BOT_TOKEN = os.getenv('DISCORD_TOKEN')
 
 # CHANNEL ID HIER EINFÜGEN: Ersetze mit der ID deines gewünschten Channels
 TARGET_CHANNEL_ID = 1412638870532526133
+DRUG_CHANNEL_ID = 1412532541725868193  # Drogenlabor Channel ID
+
+# ROLLE ID für Benachrichtigungen
+NOTIFICATION_ROLE_ID = 1413244800215547964
 
 # Bot mit Berechtigungen initialisieren
 intents = discord.Intents.default()
@@ -49,9 +76,45 @@ OBJECTS = {
 object_counts = {obj: 0 for obj in OBJECTS.keys()}
 hourly_revenue = 0  # Stündlicher Umsatz
 
+# Drogenlabor Timer Variablen
+drug_timer_end = None
+drug_timer_type = None  # "cannabis", "cocaine", "counterfeit"
+drug_message_id = None
+notification_sent = False  # Damit wir nicht mehrfach pingen
+
 # Nachrichten-IDs für spätere Updates
 control_message_id = None
 saved_files = {}  # Dictionary für gespeicherte Dateien: {filename: message_id}
+
+# ✅ SELBST-PING MIT NACHRICHT
+async def self_ping():
+    await bot.wait_until_ready()
+    
+    while not bot.is_closed():
+        try:
+            # Ping Nachricht senden (silent)
+            channel = bot.get_channel(TARGET_CHANNEL_ID)
+            if channel:
+                msg = await channel.send("Du hast mich beim AFK bot gefunden, Glückwunsch", silent=True)
+                # Nachricht nach 2 Sekunden löschen
+                await asyncio.sleep(2)
+                await msg.delete()
+                print(f"✅ Ping-Nachricht gesendet & gelöscht: {datetime.now().strftime('%H:%M:%S')}")
+            
+            # Zusätzlich Replit URL pingem für 24/7
+            try:
+                replit_url = f"https://{os.environ['REPL_SLUG']}.{os.environ['REPL_OWNER']}.repl.co"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(replit_url) as response:
+                        print(f"✅ Replit Ping: {response.status}")
+            except:
+                print("✅ Selbst-Ping aktiv")
+                
+        except Exception as e:
+            print(f"❌ Ping Error: {e}")
+        
+        # Warte 5 Minuten bis zum nächsten Ping
+        await asyncio.sleep(300)
 
 # Funktion zum Formatieren von Zahlen mit Punkten als Tausendertrennzeichen
 def format_currency(amount):
@@ -121,6 +184,40 @@ def create_state_embed():
     
     return embed
 
+# Funktion zum Erstellen des Drogenlabor-Embeds
+def create_drug_embed():
+    embed = discord.Embed(
+        title="Drogenlabor Timer:",
+        color=0xFFFFFF  # Weiße Farbe für den Embed-Balken
+    )
+    
+    if drug_timer_end and drug_timer_type:
+        # Berechne die verbleibende Zeit
+        remaining = drug_timer_end - datetime.now()
+        
+        if remaining.total_seconds() > 0:
+            # Erstelle einen Discord-Timestamp für die Endzeit
+            timestamp = int(drug_timer_end.timestamp())
+            
+            if drug_timer_type == "cannabis":
+                embed.description = f"🍁 Cannabis Fertig in: <t:{timestamp}:R>"
+            elif drug_timer_type == "cocaine":
+                embed.description = f"❄️ Kokain Fertig in: <t:{timestamp}:R>"
+            elif drug_timer_type == "counterfeit":
+                embed.description = f"💸 Falschgeld Fertig in: <t:{timestamp}:R>"
+        else:
+            # Timer ist abgelaufen
+            if drug_timer_type == "cannabis":
+                embed.description = "🍁 Cannabis fertig! ✅"
+            elif drug_timer_type == "cocaine":
+                embed.description = "❄️ Kokain fertig! ✅"
+            elif drug_timer_type == "counterfeit":
+                embed.description = "💸 Falschgeld fertig! ✅"
+    else:
+        embed.description = "Kein aktiver Timer"
+    
+    return embed
+
 # Modal für individuelle Betragseingabe
 class RevenueModal(Modal, title="Stündlichen Umsatz anpassen"):
     def __init__(self, operation="add"):
@@ -175,6 +272,52 @@ async def update_embed():
         except Exception as e:
             print(f"❌ Fehler beim automatischen Update des Embeds: {e}")
 
+# Funktion zum Aktualisieren des Drogen-Embeds
+async def update_drug_embed():
+    global drug_message_id
+    if drug_message_id:
+        try:
+            channel = bot.get_channel(DRUG_CHANNEL_ID)
+            if channel:
+                message = await channel.fetch_message(drug_message_id)
+                new_embed = create_drug_embed()
+                await message.edit(embed=new_embed)
+        except Exception as e:
+            print(f"❌ Fehler beim automatischen Update des Drogen-Embeds: {e}")
+
+# Funktion zum Senden der Benachrichtigung 10 Minuten vor Fertigstellung
+async def send_notification():
+    global notification_sent, drug_timer_end, drug_timer_type
+    
+    if drug_timer_end and drug_timer_type and not notification_sent:
+        remaining = drug_timer_end - datetime.now()
+        
+        # Prüfe ob noch 10 Minuten oder weniger übrig sind
+        if remaining.total_seconds() <= 600 and remaining.total_seconds() > 0:
+            try:
+                channel = bot.get_channel(DRUG_CHANNEL_ID)
+                role = channel.guild.get_role(NOTIFICATION_ROLE_ID)
+                
+                if role:
+                    # Bestimme das entsprechende Emoji für die Nachricht
+                    emoji = ""
+                    if drug_timer_type == "cannabis":
+                        emoji = "🍁"
+                    elif drug_timer_type == "cocaine":
+                        emoji = "❄️"
+                    elif drug_timer_type == "counterfeit":
+                        emoji = "💸"
+                    
+                    await channel.send(f"{role.mention} Das Produkt {emoji} wird in 10 Minuten fertig, mach dich bereit es abzuholen!")
+                    notification_sent = True
+                    print(f"✅ Benachrichtigung gesendet für {drug_timer_type}")
+            except Exception as e:
+                print(f"❌ Fehler beim Senden der Benachrichtigung: {e}")
+        
+        # Wenn der Timer abgelaufen ist, setze die Benachrichtigung zurück
+        elif remaining.total_seconds() <= 0:
+            notification_sent = False
+
 # Funktion zum Speichern des Zustands als Dateianhang im Channel
 async def save_state_to_channel():
     global saved_files
@@ -226,13 +369,30 @@ async def auto_save_task():
             if filename:
                 print(f"✅ Automatische Sicherung erstellt: {filename}")
                 
-                # Warte 61 Minuten um sicherzustellen, dass die Aufgabe nur einmal pro Tag ausgeführt wird
+                # Warte 61 Minuten um sicherzustellen, dass die Aufgabe nur einmal pro Day ausgeführt wird
                 await asyncio.sleep(3660)
             else:
                 print("❌ Fehler bei der automatischen Sicherung!")
                 await asyncio.sleep(60)  # Warte 1 Minute bei Fehler
         else:
             # Prüfe jede Minute
+            await asyncio.sleep(60)
+
+# Funktion zum Überprüfen der Drogen-Timer
+async def check_drug_timers():
+    await bot.wait_until_ready()
+    
+    while not bot.is_closed():
+        try:
+            # Überprüfe ob ein Timer aktiv ist
+            if drug_timer_end and drug_timer_type:
+                await send_notification()
+                await update_drug_embed()
+            
+            # Warte 30 Sekunden bis zur nächsten Überprüfung
+            await asyncio.sleep(30)
+        except Exception as e:
+            print(f"❌ Fehler in check_drug_timers: {e}")
             await asyncio.sleep(60)
 
 # Funktion zum Laden eines Zustands aus einer Channel-Datei
@@ -264,7 +424,7 @@ async def load_state_from_channel(filename, message_id):
         print(f"❌ Fehler beim Laden der Datei: {e}")
         return False
 
-# Funktion zum Erstellen der Buttons
+# Funktion zum Erstellen der Buttons für State Control
 def create_buttons():
     class ControlView(View):
         def __init__(self):
@@ -527,6 +687,54 @@ def create_buttons():
     
     return ControlView()
 
+# Funktion zum Erstellen der Buttons für Drogenlabor
+def create_drug_buttons():
+    class DrugView(View):
+        def __init__(self):
+            super().__init__(timeout=None)
+            
+            # Buttons für die verschiedenen Drogen
+            cannabis_button = Button(style=discord.ButtonStyle.success, emoji="🍁", custom_id="cannabis_button")
+            cocaine_button = Button(style=discord.ButtonStyle.secondary, emoji="❄️", custom_id="cocaine_button")
+            counterfeit_button = Button(style=discord.ButtonStyle.gray, emoji="💸", custom_id="counterfeit_button")
+            
+            cannabis_button.callback = self.cannabis_callback
+            cocaine_button.callback = self.cocaine_callback
+            counterfeit_button.callback = self.counterfeit_callback
+            
+            self.add_item(cannabis_button)
+            self.add_item(cocaine_button)
+            self.add_item(counterfeit_button)
+        
+        async def cannabis_callback(self, interaction: Interaction):
+            global drug_timer_end, drug_timer_type, notification_sent
+            drug_timer_end = datetime.now() + timedelta(hours=5)
+            drug_timer_type = "cannabis"
+            notification_sent = False
+            
+            await update_drug_embed()
+            await interaction.response.send_message("🍁 Cannabis-Timer gestartet (5 Stunden)", ephemeral=True, delete_after=3)
+        
+        async def cocaine_callback(self, interaction: Interaction):
+            global drug_timer_end, drug_timer_type, notification_sent
+            drug_timer_end = datetime.now() + timedelta(hours=5)
+            drug_timer_type = "cocaine"
+            notification_sent = False
+            
+            await update_drug_embed()
+            await interaction.response.send_message("❄️ Kokain-Timer gestartet (5 Stunden)", ephemeral=True, delete_after=3)
+        
+        async def counterfeit_callback(self, interaction: Interaction):
+            global drug_timer_end, drug_timer_type, notification_sent
+            drug_timer_end = datetime.now() + timedelta(hours=5)
+            drug_timer_type = "counterfeit"
+            notification_sent = False
+            
+            await update_drug_embed()
+            await interaction.response.send_message("💸 Falschgeld-Timer gestartet (5 Stunden)", ephemeral=True, delete_after=3)
+    
+    return DrugView()
+
 # Slash Command zum manuellen Refreshen (für Notfälle)
 @tree.command(name="res", description="Embed manuell aktualisieren (Notfall)")
 async def res_command(interaction: Interaction):
@@ -566,6 +774,12 @@ async def on_ready():
     # Starte den automatischen Speicher-Task
     bot.loop.create_task(auto_save_task())
     
+    # Starte den Selbst-Ping Task
+    bot.loop.create_task(self_ping())
+    
+    # Starte den Drogen-Timer-Check Task
+    bot.loop.create_task(check_drug_timers())
+    
     try:
         # Channel finden
         channel = bot.get_channel(TARGET_CHANNEL_ID)
@@ -603,6 +817,33 @@ async def on_ready():
     except Exception as e:
         print(f"❌ Fehler beim Senden des Embeds: {e}")
     
+    # Drogenlabor Embed in den anderen Channel senden
+    try:
+        drug_channel = bot.get_channel(DRUG_CHANNEL_ID)
+        if drug_channel is None:
+            print(f"❌ Drogenlabor-Channel mit ID {DRUG_CHANNEL_ID} nicht gefunden!")
+            return
+        
+        # Alte Nachrichten des Bots im Drogen-Channel löschen
+        async for message in drug_channel.history(limit=10):
+            if message.author == bot.user:
+                await message.delete()
+                await asyncio.sleep(0.5)
+        
+        # Drogenlabor Embed und Buttons erstellen
+        drug_embed = create_drug_embed()
+        drug_view = create_drug_buttons()
+        
+        # Embed senden und Message ID speichern
+        drug_message = await drug_channel.send(embed=drug_embed, view=drug_view, silent=True)
+        global drug_message_id
+        drug_message_id = drug_message.id
+        
+        print(f"✅ Drogenlabor-Embed wurde in Channel {drug_channel.name} gepostet! (ID: {drug_message_id})")
+        
+    except Exception as e:
+        print(f"❌ Fehler beim Senden des Drogen-Embeds: {e}")
+    
     # Slash Commands sync
     try:
         await tree.sync()
@@ -624,11 +865,12 @@ async def on_interaction(interaction: Interaction):
 
 # Starte den Bot
 if __name__ == "__main__":
-    if BOT_TOKEN == "DEIN_BOT_TOKEN_HIER" or not BOT_TOKEN:
-        print("❌ FEHLER: Du musst dein Bot-Token im Code eintragen!")
+    if not BOT_TOKEN or BOT_TOKEN == "DEIN_BOT_TOKEN_HIER":
+        print("❌ FEHLER: Du musst dein Bot-Token in den Umgebungsvariablen setzen!")
         print("1. Gehe zu https://discord.com/developers/applications")
         print("2. Wähle deinen Bot aus")
         print("3. Gehe zum 'Bot' Tab")
-        print("4. Kopiere das Token und ersetze 'DEIN_BOT_TOKEN_HIER'")
+        print("4. Kopiere das Token")
+        print("5. Füge es in Replit als Umgebungsvariable 'DISCORD_TOKEN' hinzu")
     else:
         bot.run(BOT_TOKEN)

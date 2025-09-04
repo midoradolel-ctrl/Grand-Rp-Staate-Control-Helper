@@ -715,18 +715,21 @@ def create_drug_buttons():
         def __init__(self):
             super().__init__(timeout=None)
             
-            # Buttons für die verschiedenen Drogen
-            cannabis_button = Button(style=discord.ButtonStyle.success, emoji="🍁", custom_id="cannabis_button")
+            # Buttons für die verschiedenen Drogen (ohne Farbe)
+            cannabis_button = Button(style=discord.ButtonStyle.secondary, emoji="🍁", custom_id="cannabis_button")
             cocaine_button = Button(style=discord.ButtonStyle.secondary, emoji="❄️", custom_id="cocaine_button")
-            counterfeit_button = Button(style=discord.ButtonStyle.gray, emoji="💸", custom_id="counterfeit_button")
+            counterfeit_button = Button(style=discord.ButtonStyle.secondary, emoji="💸", custom_id="counterfeit_button")
+            trash_button = Button(style=discord.ButtonStyle.danger, emoji="🗑️", custom_id="trash_button")
             
             cannabis_button.callback = self.cannabis_callback
             cocaine_button.callback = self.cocaine_callback
             counterfeit_button.callback = self.counterfeit_callback
+            trash_button.callback = self.trash_callback
             
             self.add_item(cannabis_button)
             self.add_item(cocaine_button)
             self.add_item(counterfeit_button)
+            self.add_item(trash_button)
         
         async def cannabis_callback(self, interaction: Interaction):
             end_time = calculate_drug_end_time()
@@ -769,6 +772,15 @@ def create_drug_buttons():
             
             await update_drug_embed()
             await interaction.response.send_message(f"💸 Falschgeld-Timer gestartet ({hours}:{minutes:02d}:00)", ephemeral=True, delete_after=3)
+        
+        async def trash_callback(self, interaction: Interaction):
+            # Lösche alle aktiven Timer
+            for drug_type in drug_timers.keys():
+                drug_timers[drug_type]["end_time"] = None
+                drug_timers[drug_type]["notification_sent"] = False
+            
+            await update_drug_embed()
+            await interaction.response.send_message("🗑️ Alle Timer wurden gelöscht!", ephemeral=True, delete_after=3)
     
     return DrugView()
 
